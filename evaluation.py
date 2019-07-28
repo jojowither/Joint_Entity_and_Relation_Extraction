@@ -16,7 +16,6 @@ def evaluate_data(model, data_loader, schema, isTrueEnt=False, silent=False, rel
         isTrueEnt: optional. Boolean to give the ground truth entity to evaluate
         silent: optional. Boolean to suppress detailed decoding
         rel_detail: optional. Boolean to show the each relation's precision, recall and F1 score.
-        analyze: optional. Boolean to draw the distribution of distance of entity pair in predict.
         
     Output:
         e_score: a tuple of P/R/F-1 score of entity prediction
@@ -162,8 +161,6 @@ def batch_decode(ent_output, rel_output, batch_index, word_lists, true_ent, true
             an instance of data_util.Schema
         silent: optional.
             Boolean to suppress detailed decoding
-        analyze: optional. 
-            Boolean to draw the distribution of distance of entity pair in predict.
             
     Output:
          

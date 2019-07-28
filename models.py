@@ -16,7 +16,7 @@ from evaluation import evaluate_data, decode_ent, decode_rel
 class JointERE(nn.Module):
     def __init__(self, bert, maxlen,
             d_model, bilstm_n_layers, word_dropout, bilstm_dropout, rel_dropout,
-            d_rel, n_r_head, d_r_v, point_output, schema, embedding='BERT_base', to_seq_attn=True):
+            d_rel, n_r_head, d_r_v, point_output, schema, embedding='BERT_base', mh_attn=True):
         '''
         JointERE
             Joint Entity and Relation mention Extraction on Traditional Chinese text
@@ -44,7 +44,7 @@ class JointERE(nn.Module):
         self.point_output = point_output
         self.schema = schema
         self.n_r_head = n_r_head
-        self.to_seq_attn = to_seq_attn
+        self.mh_attn = mh_attn
         self.embedding = embedding
     
 
@@ -68,7 +68,7 @@ class JointERE(nn.Module):
         self.init_linear(self.t2rel)
         
         self.pointer = Token_wise_Pointer_Network(d_rel, point_output, n_r_head, d_r_v, 
-                                                  rel_dropout, self.rel_size, self.to_seq_attn)
+                                                  rel_dropout, self.rel_size, self.mh_attn)
         
 
         
@@ -325,12 +325,12 @@ class JointERE(nn.Module):
 #         if self.best_er_score[2] > 0:
 #             self.load_state_dict(torch.load(save_model))
         
-        if self.to_seq_attn :
-            with open("{}_head_er_scores.txt".format(self.n_r_head), "wb") as fp:  
+        if self.mh_attn :
+            with open("{}_head_er_scores_{}.txt".format(self.n_r_head, dataset), "wb") as fp:  
                 pickle.dump(dev_F1_list, fp)
         
         else:
-            with open("no_M-h_Attn_er_scores.txt".format(self.n_r_head), "wb") as fp:  
+            with open("no_M-h_Attn_er_scores_{}.txt".format(dataset), "wb") as fp:  
                 pickle.dump(dev_F1_list, fp)
         return self
 
@@ -343,7 +343,6 @@ class JointERE(nn.Module):
             isTrueEnt: optional. Boolean to give the ground truth entity to evaluate
             silent: optional. Boolean to suppress detailed decoding
             rel_detail: optional. Boolean to show the each relation's precision, recall and F1 score.
-            analyze: optional. Boolean to draw the distribution of distance of entity pair in predict.
         Output:
             e_score: P/R/F-1 score of entity prediction
             er_score: P/R/F-1 score of entity and relation prediction
@@ -364,15 +363,15 @@ class JointERE(nn.Module):
 
     
 class Token_wise_Pointer_Network(nn.Module):
-    def __init__(self, attn_input, attn_output, head, d_v, drop_out, rel_size, to_seq_attn):
+    def __init__(self, attn_input, attn_output, head, d_v, drop_out, rel_size, mh_attn):
         super().__init__()
         
-        self.to_seq_attn = to_seq_attn
+        self.mh_attn = mh_attn
         self.attn_input = attn_input
         self.attn_output = attn_output
         self.rel_size = rel_size
 
-        self.seq_attn = Sequence_wise_Multi_head_Attn(self.attn_input, head, d_v, drop_out)   
+        self.multi_head_attn = Sequence_wise_Multi_head_Attn(self.attn_input, head, d_v, drop_out)   
         
         self.w1 = nn.Linear(self.attn_input, self.attn_output)        
         self.w2 = nn.Linear(self.attn_input, self.attn_output)         
@@ -389,8 +388,8 @@ class Token_wise_Pointer_Network(nn.Module):
         
         
     def forward(self, encoder_outputs):
-        if self.to_seq_attn:
-            encoder_outputs = self.seq_attn(encoder_outputs)
+        if self.mh_attn:
+            encoder_outputs = self.multi_head_attn(encoder_outputs)
         
         decoder = encoder_outputs[:,-1,:].unsqueeze(1)                       #B x 1 x (d_model+LE) 
         encoder_score = self.w1(encoder_outputs)                             #B x now len x POINT_OUT

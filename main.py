@@ -15,12 +15,9 @@ import pickle
 import os
 import argparse
 
-## BUG檢查
-## 文件註解
-## 畫圖code
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data_root', type=str, default='/storage/jojo2/data/')
+parser.add_argument('--data_root', type=str, default='data/')
 parser.add_argument('--dataset', type=str, default='conll04', help='Choose conll04, ADE, ACE04, ACE05')
 
 parser.add_argument('--USE_CUDA', type=bool, default=True)
@@ -40,7 +37,7 @@ parser.add_argument('--rel_dropout', type=float, default=0.2)
 parser.add_argument('--d_rel', type=int, default=512)
 parser.add_argument('--n_r_head', type=int, default=16, help='Numbers of head in relation layer(multi-head attrntion)')
 parser.add_argument('--point_out', type=int, default=128, help='Pointer network size')
-parser.add_argument('--to_seq_attn', type=bool, default=True, help='Use sequence-wise multi-head attention')
+parser.add_argument('--mh_attn', type=bool, default=True, help='Use sequence-wise multi-head attention')
 parser.add_argument('--lr', type=float, default=0.0002, help='Learning rate in Adam')
 parser.add_argument('--weight_decay', type=float, default=1e-5)
 
@@ -145,7 +142,7 @@ dataset_root = os.path.join(root, dataset)
 batch_size = args.batch_size
 embedding = args.embedding
 n_iter = args.n_iter
-d_r_v = args.d_rel//args.n_r_head
+d_r_v = args.d_rel//args.n_r_head  # demension of relation values
 
 if embedding=='BERT_base' or embedding=='BERT_base_finetune':
     d_model = 768
@@ -176,7 +173,7 @@ schema = Schema(dataset)
 param_list = [bert, max_len, d_model, args.bilstm_n_layers, 
               args.word_dropout, args.bilstm_dropout, args.rel_dropout,
               args.d_rel, args.n_r_head, d_r_v, args.point_out, schema, 
-              args.embedding, args.to_seq_attn]
+              args.embedding, args.mh_attn]
 
 
 print()
