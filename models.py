@@ -1,7 +1,6 @@
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from pytorch_pretrained_bert import BertTokenizer, BertModel
 
 import time
 import numpy as np
@@ -14,9 +13,9 @@ from evaluation import evaluate_data, decode_ent, decode_rel
 
 
 class JointERE(nn.Module):
-    def __init__(self, bert, maxlen,
-            d_model, bilstm_n_layers, word_dropout, bilstm_dropout, rel_dropout,
-            d_rel, n_r_head, d_r_v, point_output, schema, embedding='BERT_base', mh_attn=True):
+    def __init__(self, pre_model, maxlen,
+            d_model, bilstm_n_layers, word_dropout, bilstm_dropout, rel_dropout, d_rel, n_r_head, 
+            d_r_v, point_output, schema, args, embedding='BERT_base', mh_attn=True):
         '''
         JointERE
             Joint Entity and Relation mention Extraction on Traditional Chinese text
@@ -33,8 +32,8 @@ class JointERE(nn.Module):
         super().__init__()
         
         # Load pre-trained model (weights)
-        self.bert = bert
-        self.bert.eval()
+        self.pre_model = pre_model
+        self.pre_model.eval()
              
         self.maxlen = maxlen
         self.ent_size = len(schema.ent2ix)                   #es
@@ -46,6 +45,10 @@ class JointERE(nn.Module):
         self.n_r_head = n_r_head
         self.mh_attn = mh_attn
         self.embedding = embedding
+        self.rel_weight = args.rel_weight
+        self.rel_weight_base_tag = args.rel_weight_base_tag
+        self.scheduler_step = args.scheduler_step
+        self.scheduler_gamma = args.scheduler_gamma
     
 
         self.word_dropout = nn.Dropout(word_dropout)
@@ -54,6 +57,7 @@ class JointERE(nn.Module):
     
         self.bilstm = nn.LSTM(d_model, d_model // 2, num_layers=bilstm_n_layers, 
                               bidirectional=True, batch_first=True, dropout=bilstm_dropout) 
+
         
     
         self.fc2tag = nn.Linear(d_model+self.label_embed_dim, self.ent_size)
@@ -69,6 +73,15 @@ class JointERE(nn.Module):
         
         self.pointer = Token_wise_Pointer_Network(d_rel, point_output, n_r_head, d_r_v, 
                                                   rel_dropout, self.rel_size, self.mh_attn)
+
+
+        try:
+            self.ft = self.embedding.split('_')[2]
+        except:
+            if self.embedding.split('_')[0]!='GloVe':
+                self.ft = 'pre_model'
+            else:
+                self.ft = 'constant_embedding'
         
 
         
@@ -115,7 +128,8 @@ class JointERE(nn.Module):
             text = copy.deepcopy(loader.texts_with_OOV[bi])
             wp_range = copy.deepcopy(loader.wordpiece_ranges[bi])
             
-            bert_len, feature = enc.size()
+
+            premodel_len, feature = enc.size()
             text_len = len(text)
 
             enc = enc[:text_len]
@@ -142,7 +156,6 @@ class JointERE(nn.Module):
         return torch.stack(cb_wordpiece_tensor), cb_wordpiece_text
     
     
-    
         
     def forward(self, embed_input, batch_index, loader, batch_ent=None):
         '''Assume I/O resides on the same device, and so does this module'''
@@ -151,24 +164,31 @@ class JointERE(nn.Module):
         entity_tensor = torch.zeros(batch_size, self.maxlen, self.ent_size, device=embed_input.device)  #B x ML x es
         rel_tensor = torch.zeros(batch_size, self.maxlen, self.maxlen, self.rel_size, device=embed_input.device)  #B x ML x ML x rs
 
-
         
-        if self.embedding=='BERT_base' or self.embedding=='BERT_large':
+
+        if self.ft=='pre_model':
             with torch.no_grad():
-                embed_input, _ = self.bert(embed_input)
-                embed_input = torch.sum(torch.stack([layer for layer in embed_input]), dim=0)
+                embed_input = self.pre_model(embed_input)
+                # print(embed_input[0].size())  # torch.Size([32, 192, 768])
+                # print(embed_input[1].size())  # torch.Size([32, 768])
+                # print(len(embed_input[2]))    # 13
+                # print(embed_input[2][0].size())  # torch.Size([32, 192, 768])
+                # print(embed_input[2][12].size())
+                embed_input = torch.sum(torch.stack([layer for layer in embed_input[2][:-1]]), dim=0)
+                # print(embed_input.size())
                 embed_input, cb_wp_texts = self.cb_wordpiece_and_rm_pad(embed_input, batch_index, loader)
-                self.check_text_len(loader, cb_wp_texts, batch_index) 
+                ## 
+                # self.check_text_len(loader, cb_wp_texts, batch_index) 
                 
-        elif self.embedding=='BERT_base_finetune':
-            embed_input, _ = self.bert(embed_input, output_all_encoded_layers=False)
+        elif self.ft=='finetune':
+            embed_input, _ = self.pre_model(embed_input)
             embed_input, cb_wp_texts = self.cb_wordpiece_and_rm_pad(embed_input, batch_index, loader)
-            self.check_text_len(loader, cb_wp_texts, batch_index) 
+            ##
+            # self.check_text_len(loader, cb_wp_texts, batch_index) 
 
             
              
-        embed_input = self.word_dropout(embed_input)                                  
-        
+        embed_input = self.word_dropout(embed_input)                                          
         enc_output = self.bilstm(embed_input)[0]      # B x ML x d_model
 #         enc_output = self.lstm_dropout(enc_output)
 
@@ -213,8 +233,8 @@ class JointERE(nn.Module):
     def entity_loss(self):
         return EntityNLLLoss()
     
-    def relation_loss(self):
-        return RelationNLLLoss()
+    def relation_loss(self, device):
+        return RelationNLLLoss(self.rel_weight, self.rel_weight_base_tag, self.schema.rel2ix, device)
 
 
     
@@ -243,25 +263,30 @@ class JointERE(nn.Module):
         '''
         
         criterion_tag = self.entity_loss()
-        criterion_rel = self.relation_loss()
+        criterion_rel = self.relation_loss(loader.device)
         self.loader = loader
         self.dev_loader = dev_loader
+        e_score, er_score = (0, 0, 0), (0, 0, 0)
         self.best_er_score = (0, 0, 0)
         dev_F1_list = []
 
-        optimizer = optimizer or optim.Adam(self.parameters(), lr=0.0002, weight_decay=1e-5, amsgrad=True)
-
-#         optimizer = ScheduledOptim(optim.Adam(
-#             filter(lambda x: x.requires_grad, self.parameters()), 
-#             weight_decay=1e-4))
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=self.scheduler_step, 
+                                              gamma=self.scheduler_gamma)
         
         if save_model is None:
             hash_id = int(time.time())
-            print(dataset)
-            if n_fold:
-                save_model = 'NER_RE_best.{}.{}.{}_fold.pkl'.format(dataset, hash_id, n_fold)
+            print('Start to train/eval the {}'.format(dataset))
+            print('Number of heads: ', self.n_r_head)
+            n_r_head = ''
+            if self.n_r_head<10:
+                n_r_head = str(0)+str(self.n_r_head)
             else:
-                save_model = 'NER_RE_best.{}.{}.pkl'.format(dataset, hash_id)
+                n_r_head = str(self.n_r_head)
+                
+            if n_fold:
+                save_model = 'NER_RE_best.{}.{}.{}.{}_fold.pkl'.format(dataset, self.embedding, n_r_head, n_fold)
+            else:
+                save_model = 'NER_RE_best.{}.{}.{}.pkl'.format(dataset, self.embedding, n_r_head)
         
         for epoch in tqdm(range(n_iter)):
             
@@ -269,8 +294,6 @@ class JointERE(nn.Module):
                 self.train()
 
                 # forward
-                optimizer.zero_grad()
-                
                 if true_ent:
                     ent_output, rel_output = self.forward(embed_input, batch_index, loader, batch_ent)
                 
@@ -281,16 +304,22 @@ class JointERE(nn.Module):
                 # backward
                 batch_loss_ent = criterion_tag(ent_output, batch_ent)
                 batch_loss_rel = criterion_rel(rel_output, batch_rel)  
+
+                # batch_loss = batch_loss_ent + self.rel_loss_weight*batch_loss_rel
                 batch_loss = batch_loss_ent + batch_loss_rel
 
                 batch_loss.backward()
                 
                 # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
-#                 torch.nn.utils.clip_grad_norm_(self.parameters(), 5)
+                # torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+                # torch.nn.utils.clip_grad_value_(self.parameters(), 1)
                 
                 # update parameters
-#                 optimizer.step_and_update_lr()
                 optimizer.step()
+                
+                optimizer.zero_grad()
+
+            scheduler.step()
 
 
 
@@ -308,6 +337,8 @@ class JointERE(nn.Module):
             print("      %s  | val ent loss %.4f | val rel loss %.4f"
           % (" "*len(str(epoch+1)), batch_loss_ent_dev, batch_loss_rel_dev))
 
+            print('lr {}'.format(optimizer.param_groups[0]['lr']))
+
 
             if epoch>-1:
                 e_score, er_score = self.score(dev_loader, silent=True)
@@ -322,8 +353,8 @@ class JointERE(nn.Module):
                             
                                   
                                                           
-#         if self.best_er_score[2] > 0:
-#             self.load_state_dict(torch.load(save_model))
+        # if self.best_er_score[2] > 0:
+        #     self.load_state_dict(torch.load(save_model))
         
         if self.mh_attn :
             with open("{}_head_er_scores_{}.txt".format(self.n_r_head, dataset), "wb") as fp:  
@@ -347,6 +378,7 @@ class JointERE(nn.Module):
             e_score: P/R/F-1 score of entity prediction
             er_score: P/R/F-1 score of entity and relation prediction
         '''
+
         if rel_detail==True:
             e_score, er_score, all_er_score, acc_zone_block = evaluate_data(self, loader, self.schema, isTrueEnt, 
                                                             silent, rel_detail, print_final)
@@ -381,6 +413,7 @@ class Token_wise_Pointer_Network(nn.Module):
         nn.init.xavier_normal_(self.w1.weight)
         nn.init.xavier_normal_(self.w2.weight) 
         nn.init.xavier_normal_(self.v.weight)
+
         
         self.softmax = nn.LogSoftmax(dim=-1)
 #         self.layer_norm = nn.LayerNorm(self.attn_output)
@@ -420,12 +453,13 @@ class Sequence_wise_Multi_head_Attn(nn.Module):
         self.w_ks = nn.Linear(d_model, n_head * d_v)
         self.w_vs = nn.Linear(d_model, n_head * d_v)
         
-#         nn.init.xavier_normal_(self.w_qs.weight)
-#         nn.init.xavier_normal_(self.w_ks.weight)
-#         nn.init.xavier_normal_(self.w_vs.weight)        
-        nn.init.normal_(self.w_qs.weight, mean=0, std=np.sqrt(2.0 / (d_model + d_v)))
-        nn.init.normal_(self.w_ks.weight, mean=0, std=np.sqrt(2.0 / (d_model + d_v)))
-        nn.init.normal_(self.w_vs.weight, mean=0, std=np.sqrt(2.0 / (d_model + d_v)))
+        # nn.init.xavier_normal_(self.w_qs.weight)
+        # nn.init.xavier_normal_(self.w_ks.weight)
+        # nn.init.xavier_normal_(self.w_vs.weight)        
+        nn.init.normal_(self.w_qs.weight, mean=0, std=np.sqrt(1.0 / (d_model + d_v)))
+        nn.init.normal_(self.w_ks.weight, mean=0, std=np.sqrt(1.0 / (d_model + d_v)))
+        nn.init.normal_(self.w_vs.weight, mean=0, std=np.sqrt(1.0 / (d_model + d_v)))
+
         
 #         self.layer_norm = nn.LayerNorm(d_model)
 
@@ -453,7 +487,7 @@ class Sequence_wise_Multi_head_Attn(nn.Module):
 
 
         attn = torch.bmm(query, key.transpose(1, 2))
-        attn = attn / temperature
+        attn = attn / (temperature+1e-5)
         
         attn = self.softmax(attn)                                          #(n*B) x 1 x now len
         attn = self.dropout(attn)
@@ -484,8 +518,14 @@ class EntityNLLLoss(nn.NLLLoss):
     
     
 class RelationNLLLoss(nn.NLLLoss):    
-    def __init__(self):
-        super().__init__(reduction='none')
+    def __init__(self, weight, base_weight, rel2ix, device):
+        self.rel_weight = weight
+        self.base_weight = base_weight
+        self.rel2ix = rel2ix
+        weight = torch.ones(len(self.rel2ix), device=device)*self.rel_weight
+        weight[0], weight[1] = self.base_weight, self.base_weight
+        super().__init__(reduction='none', weight=weight)
+        
         
     def forward(self, outputs, labels):
         loss = super(RelationNLLLoss, self).forward(outputs.permute(0,-1,1,2),labels)
@@ -495,48 +535,21 @@ class RelationNLLLoss(nn.NLLLoss):
 
     
     
-def mean_sentence_loss(loss):    
-    num_tokens = loss.norm(0, -1)
-#     num_tokens = loss.size(-1)
+def mean_sentence_loss(loss):
+
+    batch, length = loss.size(0), loss.size(1)
+    num_tokens = torch.ones(batch, length, device=loss.device)*\
+                 torch.tensor(list(range(1,length+1)), dtype=loss.dtype, device=loss.device)
+    # num_tokens = loss.norm(0, -1)
+
+
+    # loss.size() torch.Size([32, 110, 110])
+    # num_tokens  torch.Size([32, 110])
+    # tensor([[  1.,   2.,   3.,  ..., 108., 109., 110.],
+    #         [  1.,   2.,   3.,  ..., 108., 109., 110.],....)
+    # loss  torch.Size([32, 110])
     
     return loss.sum(dim=-1).div(num_tokens).mean()
 
 
 
-
-class ScheduledOptim():
-    '''A simple wrapper class for learning rate scheduling'''
-
-    def __init__(self, optimizer):
-        self._optimizer = optimizer
-        self.n_current_steps = 0
-
-    def step_and_update_lr(self):
-        "Step with the inner optimizer"
-        self._update_learning_rate()
-        self._optimizer.step()
-
-    def zero_grad(self):
-        "Zero out the gradients by the inner optimizer"
-        self._optimizer.zero_grad()
-
-    def _update_learning_rate(self):
-        ''' Learning rate scheduling per step '''
-        
-        if self.n_current_steps<500:
-            lr = 0.005
-            
-        elif self.n_current_steps<1000:
-            lr = 0.0005
-        elif self.n_current_steps<1500:
-            lr = 0.0001
-        elif self.n_current_steps<8000:
-            lr = 0.00002
-        else :
-            lr = 0.000001
-            
-
-
-        self.n_current_steps += 1
-        for param_group in self._optimizer.param_groups:
-            param_group['lr'] = lr

@@ -1,6 +1,6 @@
 import torch
 import torch.utils.data as Data
-from pytorch_pretrained_bert import BertTokenizer, BertModel
+# from pytorch_pretrained_bert import BertTokenizer, BertModel
 
 import numpy as np
 import copy
@@ -155,9 +155,10 @@ class BIOLoader(Data.DataLoader):
         self.raw_input, *results = self.preprocess(data, schema)
         
         
-        if embedding=='BERT_base' or embedding=='BERT_large' or embedding=='BERT_base_finetune':
-            embedding_indexeds = self.get_bert_input()
-        elif embedding=='GloVe':           
+        self.embedding = embedding
+        if embedding!='GloVe':
+            embedding_indexeds = self.get_pretrain_input()
+        else:           
             embedding_indexeds = self.get_w2v_input()
         results = [embedding_indexeds]+results
 
@@ -194,9 +195,11 @@ class BIOLoader(Data.DataLoader):
 
 
 
-    def get_bert_input(self):
+    def get_pretrain_input(self):
         indexeds = []
         self.texts_with_OOV = ['']*len(self.raw_input)
+
+        # this wordpiece_ranges defines wordpiece and sentencepiece
         self.wordpiece_ranges = ['']*len(self.raw_input)
         
 
@@ -206,9 +209,13 @@ class BIOLoader(Data.DataLoader):
 
             tokenized_text = self.tokenizer.tokenize(text)
             indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
-            indexed_tokens = self.bert_pad(indexed_tokens)
+            indexed_tokens = self.pretrain_pad(indexed_tokens)
 
-            wordpiece_range = self.wordpiece_combine(text, tokenized_text)
+            if self.embedding.split('_')[0]=='BERT':
+                wordpiece_range = self.wordpiece_combine(text, tokenized_text)
+
+            elif self.embedding.split('_')[0]=='XLNet':
+                wordpiece_range = self.sentencepiece_combine(text, tokenized_text)
 
             indexeds.append(torch.tensor(indexed_tokens))
             
@@ -219,7 +226,8 @@ class BIOLoader(Data.DataLoader):
         return torch.stack(indexeds)
 
 
-    def bert_pad(self, indexed_tokens):
+    def pretrain_pad(self, indexed_tokens):
+        # self.max_len+74 == the range of maxlen + the slice after wordpiece
         indexed_tokens += [0 for i in range(self.max_len+74 - len(indexed_tokens))]
         return indexed_tokens
 
@@ -266,6 +274,36 @@ class BIOLoader(Data.DataLoader):
                         
         
         return wordpiece_range
+
+
+    def sentencepiece_combine(self, raw_text, tokenized_text):
+        raw_text = raw_text.split()
+        wordpiece = []
+        wordpiece_range = []   
+        piece_count = 0
+        tokenized_pos = 0
+        record_str = ''
+
+        for i, tokenized in enumerate(tokenized_text):
+            if len(tokenized)==1 and tokenized =='▁':
+                wordpiece_range.append(wordpiece)
+                wordpiece = []
+                wordpiece.append(i)
+
+            elif tokenized[0] =='▁':
+                wordpiece_range.append(wordpiece)
+                wordpiece = []
+                wordpiece.append(i)
+
+            else:
+                wordpiece.append(i)
+
+        wordpiece_range.append(wordpiece)
+
+        return wordpiece_range[1:]
+
+
+
     
     
     def get_w2v_input(self):

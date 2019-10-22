@@ -698,7 +698,10 @@ def accuracy_for_sentences_of_varying_lengths(all_t_r_lists, all_p_r_lists, sent
                 true_zone_block['>50']+=1
 
     for k in acc_zone_block.keys():
-        acc_zone_block[k] = true_zone_block[k]/all_zone_block[k]
+        if all_zone_block[k] == 0:
+            acc_zone_block[k] = 0
+        else:    
+            acc_zone_block[k] = true_zone_block[k]/all_zone_block[k]
         
     
     return acc_zone_block
