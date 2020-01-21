@@ -30,9 +30,10 @@ class Schema():
             self.Entity_tags = ['PER', 'ORG', 'GPE', 'LOC', 'FAC', 'WEA', 'VEH']
             self.Relation_tags = ['PHYS', 'PER_SOC', 'EMP_ORG', 'ART', 'OTHER_AFF', 'GPE_AFF']
             
-        elif dataset=='ACE05':
+        elif dataset=='ACE05' or 'ACE05_cross':
             self.Entity_tags = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
             self.Relation_tags = ['ART', 'GEN_AFF', 'ORG_AFF', 'PART_WHOLE', 'PER_SOC', 'PHYS']
+
             
 
         self.ent2ix = EntTagDict(self)
@@ -119,7 +120,7 @@ class RelTagDict(TagDict):
 
 class BIOLoader(Data.DataLoader):
     
-    def __init__(self, data, max_len, batch_size, schema, tokenizer,
+    def __init__(self, data, max_len, batch_size, schema, tokenizer, args,
                  embedding='BERT_base', shuffle=False, device=torch.device('cpu')):
         
         '''
@@ -150,7 +151,7 @@ class BIOLoader(Data.DataLoader):
         self.max_len = max_len
         self.device = device
         self.tokenizer = tokenizer
-                    
+        self.bi_fill = args.bi_fill                   
                 
         self.raw_input, *results = self.preprocess(data, schema)
         
@@ -186,7 +187,7 @@ class BIOLoader(Data.DataLoader):
         input_padded, ent_padded, rel_padded = pad_all(f_w, f_e, f_r, self.max_len)
         #================================================
         ent_var = prepare_all(ent_padded, schema.ent2ix)
-        rel_var = prepare_rel(rel_padded, schema.rel2ix)
+        rel_var = prepare_rel(rel_padded, schema.rel2ix, self.bi_fill)
         #================================================
 
         self.batch_index = torch.from_numpy(np.asarray(reserved_index))
@@ -228,7 +229,7 @@ class BIOLoader(Data.DataLoader):
 
     def pretrain_pad(self, indexed_tokens):
         # self.max_len+74 == the range of maxlen + the slice after wordpiece
-        indexed_tokens += [0 for i in range(self.max_len+74 - len(indexed_tokens))]
+        indexed_tokens += [0 for i in range(self.max_len+94 - len(indexed_tokens))]
         return indexed_tokens
 
 
@@ -461,7 +462,7 @@ def prepare_all(seqs, to_ix):
     return seq_list
 
 
-def prepare_rel(rel_padded, to_ix):
+def prepare_rel(rel_padded, to_ix, bi_fill):
     '''
     Prepare relation label data structure
     Output:
@@ -470,7 +471,7 @@ def prepare_rel(rel_padded, to_ix):
     '''
  
     num_seqs, max_len, num_rels = len(rel_padded), len(rel_padded[-1]), len(to_ix)
-    rel_ptr = torch.zeros(num_seqs, max_len, max_len, dtype=torch.long)
+    rel_ptr = torch.ones(num_seqs, max_len, max_len, dtype=torch.long)
 
     for i, rel_seq in enumerate(rel_padded):
         rel_dict = {}
@@ -490,10 +491,13 @@ def prepare_rel(rel_padded, to_ix):
 
                             if record_loc=='A':
                                 rel_ptr[i][j][record_idx] = to_ix[rel_token[0]+"#B2A"]
+                                if bi_fill:
+                                    rel_ptr[i][record_idx][j] = to_ix[rel_token[0]+"#A2B"]
 
                             elif record_loc=='B':
-                                rel_ptr[i][j][record_idx] = to_ix[rel_token[0]+"#A2B"]                                                     
-                                
+                                rel_ptr[i][j][record_idx] = to_ix[rel_token[0]+"#A2B"] 
+                                if bi_fill:
+                                    rel_ptr[i][record_idx][j] = to_ix[rel_token[0]+"#B2A"]
                             
     return rel_ptr
 
@@ -527,7 +531,7 @@ def get_cv_path_file(cv_fullpath, process_path):
 def get_cv_context(filename_fullpath, dataset):
     cv_content = []
     
-    if dataset=='ACE04' or dataset=='ACE05':
+    if dataset=='ACE04' or dataset=='ACE05' or dataset=='ACE05_cross':
         for fn in filename_fullpath:
             with open(fn, "r", encoding="utf-8") as f:
                 content = f.read().splitlines()

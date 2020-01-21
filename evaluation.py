@@ -662,9 +662,9 @@ def calculate_distance(true_rel_list):
 
 def accuracy_for_sentences_of_varying_lengths(all_t_r_lists, all_p_r_lists, sent_lens):
     
-    true_zone_block = {10:0, 20:0, 30:0, 40:0, 50:0, '>50':0}
-    all_zone_block = {10:0, 20:0, 30:0, 40:0, 50:0, '>50':0}
-    acc_zone_block = {10:0, 20:0, 30:0, 40:0, 50:0, '>50':0}
+    true_zone_block = {10:0, 20:0, 30:0, 40:0, '>40':0}
+    all_zone_block = {10:0, 20:0, 30:0, 40:0, '>40':0}
+    acc_zone_block = {10:0, 20:0, 30:0, 40:0, '>40':0}
     
     for t_r, p_r, s_len in zip(all_t_r_lists, all_p_r_lists, sent_lens):
         if s_len<=10:
@@ -686,16 +686,11 @@ def accuracy_for_sentences_of_varying_lengths(all_t_r_lists, all_p_r_lists, sent
             all_zone_block[40]+=1
             if t_r==p_r:
                 true_zone_block[40]+=1
-
-        elif s_len<=50:
-            all_zone_block[50]+=1
-            if t_r==p_r:
-                true_zone_block[50]+=1
                 
         else:
-            all_zone_block['>50']+=1
+            all_zone_block['>40']+=1
             if t_r==p_r:
-                true_zone_block['>50']+=1
+                true_zone_block['>40']+=1
 
     for k in acc_zone_block.keys():
         if all_zone_block[k] == 0:

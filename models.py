@@ -13,15 +13,12 @@ from evaluation import evaluate_data, decode_ent, decode_rel
 
 
 class JointERE(nn.Module):
-    def __init__(self, pre_model, maxlen,
-            d_model, bilstm_n_layers, word_dropout, bilstm_dropout, rel_dropout, d_rel, n_r_head, 
-            d_r_v, point_output, schema, args, embedding='BERT_base', mh_attn=True):
+    def __init__(self, pre_model, maxlen, d_model, d_r_v,  
+    	schema, use_device, args, embedding='XLNet_base', mh_attn=True):
         '''
         JointERE
             Joint Entity and Relation mention Extraction on Traditional Chinese text
         Input:
-            point_output:
-                The column dimension of the value matrix in the pointer network
             schema:
                 An instance of data_util.Schema with definition of entities and relations
             embedding:
@@ -39,42 +36,52 @@ class JointERE(nn.Module):
         self.ent_size = len(schema.ent2ix)                   #es
         self.rel_size = len(schema.rel2ix)                   #rs 
         self.d_model = d_model
-        self.label_embed_dim = self.ent_size                 #LE
-        self.point_output = point_output
+        self.tag_embed_dim = self.ent_size                 #TE
         self.schema = schema
-        self.n_r_head = n_r_head
+        self.n_r_head = args.n_r_head
         self.mh_attn = mh_attn
         self.embedding = embedding
         self.rel_weight = args.rel_weight
         self.rel_weight_base_tag = args.rel_weight_base_tag
         self.scheduler_step = args.scheduler_step
         self.scheduler_gamma = args.scheduler_gamma
+        self.args = args
+        self.use_device = use_device
     
 
-        self.word_dropout = nn.Dropout(word_dropout)
-        self.lstm_dropout = nn.Dropout(bilstm_dropout)  #optional
-        
+        self.word_dropout = nn.Dropout(args.word_dropout)      
     
-        self.bilstm = nn.LSTM(d_model, d_model // 2, num_layers=bilstm_n_layers, 
-                              bidirectional=True, batch_first=True, dropout=bilstm_dropout) 
+        self.bilstm = nn.LSTM(d_model, d_model // 2, num_layers=args.bilstm_n_layers, 
+                              bidirectional=True, batch_first=True, dropout=args.bilstm_dropout) 
+        # for param in self.bilstm.parameters():
+        #     if len(param.size()) >= 2:
+        #         # nn.init.orthogonal_(param.data)
+        #         nn.init.normal_(param.data, mean=0, std=np.sqrt(1.0 / (d_model)))
+        #     else:
+        #         nn.init.normal_(param.data)
 
-        
-    
-        self.fc2tag = nn.Linear(d_model+self.label_embed_dim, self.ent_size)
+           
+        self.fc2tag = nn.Linear(d_model+self.tag_embed_dim, self.ent_size)
         self.init_linear(self.fc2tag)
         
-        
-        self.softmax = nn.LogSoftmax(dim=-1)
-        self.label_embed = nn.Embedding(self.ent_size, self.label_embed_dim)
-        nn.init.orthogonal_(self.label_embed.weight)
 
-        self.t2rel = nn.Linear(2*self.label_embed_dim+d_model, d_rel)
+        self.softmax = nn.LogSoftmax(dim=-1)
+        self.tag_embed = nn.Embedding(self.ent_size, self.tag_embed_dim)
+        nn.init.orthogonal_(self.tag_embed.weight)
+
+        self.t2rel = nn.Linear(2*self.tag_embed_dim+d_model, args.d_rel)
         self.init_linear(self.t2rel)
         
-        self.pointer = Token_wise_Pointer_Network(d_rel, point_output, n_r_head, d_r_v, 
-                                                  rel_dropout, self.rel_size, self.mh_attn)
 
+        if self.args.P_hint:
+            self.position_enc = nn.Embedding.from_pretrained(get_sinusoid_encoding_table(self.maxlen, args.d_rel, 
+                                                         padding_idx=0), freeze=True)
+        else:
+            self.position_enc = None
+        self.relation_layer = Relation_Layer(d_r_v, self.rel_size, self.mh_attn, self.args, self.position_enc)
+        
 
+        # finetune
         try:
             self.ft = self.embedding.split('_')[2]
         except:
@@ -105,8 +112,7 @@ class JointERE(nn.Module):
                 print(t)
                 print(len(t))
                 print(loader.wordpiece_ranges[bi])
-                
-                      
+                                  
             assert len(s)==len(t)         
 
         
@@ -131,14 +137,12 @@ class JointERE(nn.Module):
 
             premodel_len, feature = enc.size()
             text_len = len(text)
-
             enc = enc[:text_len]
 
             
             for wp_range_l in reversed(wp_range):
                 
                 enc[wp_range_l[0]] = torch.mean(torch.stack([enc[idx] for idx in wp_range_l]), dim=0)
-#                 enc[wp_range_l[0]] = torch.sum(torch.stack([enc[idx] for idx in wp_range_l]), dim=0)
                 text[wp_range_l[0]] += ''.join([text[idx] for idx in wp_range_l[1:]])
 
                 for idx in reversed(wp_range_l[1:]):
@@ -164,18 +168,11 @@ class JointERE(nn.Module):
         entity_tensor = torch.zeros(batch_size, self.maxlen, self.ent_size, device=embed_input.device)  #B x ML x es
         rel_tensor = torch.zeros(batch_size, self.maxlen, self.maxlen, self.rel_size, device=embed_input.device)  #B x ML x ML x rs
 
-        
 
         if self.ft=='pre_model':
             with torch.no_grad():
                 embed_input = self.pre_model(embed_input)
-                # print(embed_input[0].size())  # torch.Size([32, 192, 768])
-                # print(embed_input[1].size())  # torch.Size([32, 768])
-                # print(len(embed_input[2]))    # 13
-                # print(embed_input[2][0].size())  # torch.Size([32, 192, 768])
-                # print(embed_input[2][12].size())
                 embed_input = torch.sum(torch.stack([layer for layer in embed_input[2][:-1]]), dim=0)
-                # print(embed_input.size())
                 embed_input, cb_wp_texts = self.cb_wordpiece_and_rm_pad(embed_input, batch_index, loader)
                 ## 
                 # self.check_text_len(loader, cb_wp_texts, batch_index) 
@@ -190,51 +187,55 @@ class JointERE(nn.Module):
              
         embed_input = self.word_dropout(embed_input)                                          
         enc_output = self.bilstm(embed_input)[0]      # B x ML x d_model
-#         enc_output = self.lstm_dropout(enc_output)
 
         encoder_sequence_l = [] 
         
-        label = enc_output.new_zeros(batch_size, self.label_embed_dim)
+        label = enc_output.new_zeros(batch_size, self.tag_embed_dim)
 
         for length in range(self.maxlen):
             now_token = enc_output[:,length,:]
             now_token = torch.squeeze(now_token, 1)
             
-            combine_pre = torch.cat((label, now_token), 1)                    #B x (LE+d_model)    
+            combine_pre = torch.cat((label, now_token), 1)                    #B x (TE+d_model)    
             ent_output = self.softmax(self.fc2tag(combine_pre))               #B x es
 
                        
             # pass the gold entity embedding to the next time step, if available
             if batch_ent is not None:
-                label = self.label_embed(batch_ent[:, length])
+                label = self.tag_embed(batch_ent[:, length])
                 
             else:
-                label = self.label_embed(ent_output.argmax(-1))                 #B x LE
+                label = self.tag_embed(ent_output.argmax(-1))                 #B x TE
             
-            
-            
-            combine_entity = torch.cat((combine_pre, label), 1)                    #B x (2*LE+d_model)
-            # relation layer
+            combine_entity = torch.cat((combine_pre, label), 1)                    #B x (2*TE+d_model)
+            # Relation layer
             encoder_sequence_l.append(combine_entity)  
-            encoder_sequence = torch.stack(encoder_sequence_l).transpose(0, 1)     #B x len x (2*LE+d_model)     
+            encoder_sequence = torch.stack(encoder_sequence_l).transpose(0, 1)     #B x len x (2*TE+d_model)     
    
             # Calculate attention weights 
-            # point_weights = self.pointer(self.t2rel(encoder_sequence))
-            point_weights = self.pointer(F.selu(self.t2rel(encoder_sequence)))
-      
+            rel_weights = self.relation_layer(F.selu(self.t2rel(encoder_sequence)))     
     
             entity_tensor[:,length,:] = ent_output            
-            rel_tensor[:,length,:length+1,:] = point_weights
- 
-        
+            rel_tensor[:,length,:length+1,:] = rel_weights
+
+
+        if self.args.bi_fill:
+            for length in reversed(range(self.maxlen)):
+                ## sentence order is reversed
+                ## flip the order of the sentence
+                encoder_sequence = torch.stack(encoder_sequence_l[length:]).transpose(0, 1).flip(1)
+                rel_weights = self.relation_layer(F.selu(self.t2rel(encoder_sequence))).flip(1)
+                rel_tensor[:,length,length:,:] = rel_weights
+
         return entity_tensor, rel_tensor
         
         
     def entity_loss(self):
         return EntityNLLLoss()
     
-    def relation_loss(self, device):
-        return RelationNLLLoss(self.rel_weight, self.rel_weight_base_tag, self.schema.rel2ix, device)
+    def relation_loss(self):
+        return RelationNLLLoss(self.rel_weight, self.rel_weight_base_tag, 
+                               self.schema.rel2ix, self.args.bi_fill, self.use_device)
 
 
     
@@ -263,9 +264,12 @@ class JointERE(nn.Module):
         '''
         
         criterion_tag = self.entity_loss()
-        criterion_rel = self.relation_loss(loader.device)
-        self.loader = loader
-        self.dev_loader = dev_loader
+        criterion_rel = self.relation_loss()
+
+        bi = 'bi' if self.args.bi_fill else 'nobi'
+        aug = 'aug' if self.args.augment_info else 'noaug'
+        pos = 'no_P_hint' if not self.args.P_hint else self.args.pos_strategy
+        pw = 'Pw_hint' if self.args.Pw_hint else 'no_Pw_hint'
         e_score, er_score = (0, 0, 0), (0, 0, 0)
         self.best_er_score = (0, 0, 0)
         dev_F1_list = []
@@ -284,14 +288,14 @@ class JointERE(nn.Module):
                 n_r_head = str(self.n_r_head)
                 
             if n_fold:
-                save_model = 'NER_RE_best.{}.{}.{}.{}_fold.pkl'.format(dataset, self.embedding, n_r_head, n_fold)
+                save_model = 'NER_RE_best.{}.{}.{}.{}.{}.{}.{}_fold.pkl'.format(dataset, self.embedding, n_r_head, bi, pos, pw, n_fold)
             else:
-                save_model = 'NER_RE_best.{}.{}.{}.pkl'.format(dataset, self.embedding, n_r_head)
+                save_model = 'NER_RE_best.{}.{}.{}.{}.{}.{}.pkl'.format(dataset, self.embedding, n_r_head, bi, pos, pw)
         
         for epoch in tqdm(range(n_iter)):
             
             for embed_input, batch_ent, batch_rel, batch_index in loader:
-                self.train()
+                self.train() 
 
                 # forward
                 if true_ent:
@@ -303,21 +307,20 @@ class JointERE(nn.Module):
 
                 # backward
                 batch_loss_ent = criterion_tag(ent_output, batch_ent)
-                batch_loss_rel = criterion_rel(rel_output, batch_rel)  
+                batch_loss_rel = criterion_rel(rel_output, batch_rel)   
 
-                # batch_loss = batch_loss_ent + self.rel_loss_weight*batch_loss_rel
                 batch_loss = batch_loss_ent + batch_loss_rel
 
                 batch_loss.backward()
                 
                 # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
                 # torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
-                # torch.nn.utils.clip_grad_value_(self.parameters(), 1)
+                torch.nn.utils.clip_grad_value_(self.parameters(), self.args.clip_value)
                 
                 # update parameters
-                optimizer.step()
-                
+                optimizer.step()               
                 optimizer.zero_grad()
+
 
             scheduler.step()
 
@@ -357,11 +360,11 @@ class JointERE(nn.Module):
         #     self.load_state_dict(torch.load(save_model))
         
         if self.mh_attn :
-            with open("{}_head_er_scores_{}.txt".format(self.n_r_head, dataset), "wb") as fp:  
+            with open("{}_head_er_scores_{}.{}.{}.{}.{}.txt".format(self.n_r_head, dataset, self.embedding, bi, pos, pw), "wb") as fp:  
                 pickle.dump(dev_F1_list, fp)
         
         else:
-            with open("no_M-h_Attn_er_scores_{}.txt".format(dataset), "wb") as fp:  
+            with open("no_M-h_Attn_er_scores_{}.{}.{}.{}.{}.txt".format(dataset, self.embedding, bi, pos, pw), "wb") as fp:  
                 pickle.dump(dev_F1_list, fp)
         return self
 
@@ -389,62 +392,96 @@ class JointERE(nn.Module):
                                               rel_detail, print_final)
             return e_score, er_score
     
-    
-
-                   
+                      
 
     
-class Token_wise_Pointer_Network(nn.Module):
-    def __init__(self, attn_input, attn_output, head, d_v, drop_out, rel_size, mh_attn):
+class Relation_Layer(nn.Module):
+    def __init__(self, d_v, rel_size, mh_attn, args, position_enc):
         super().__init__()
         
+        self.head = args.n_r_head      
+        self.d_rel = args.d_rel
+        self.pair_out = args.pair_out
+        self.rel_dropout = args.rel_dropout
+        self.bi_fill = args.bi_fill
+        
+        self.e_d_attn = args.e_d_attn
         self.mh_attn = mh_attn
-        self.attn_input = attn_input
-        self.attn_output = attn_output
         self.rel_size = rel_size
 
-        self.multi_head_attn = Sequence_wise_Multi_head_Attn(self.attn_input, head, d_v, drop_out)   
-        
-        self.w1 = nn.Linear(self.attn_input, self.attn_output)        
-        self.w2 = nn.Linear(self.attn_input, self.attn_output)         
-        self.tanh = nn.Tanh()   
-        self.v = nn.Linear(self.attn_output, self.rel_size)
-        
-        nn.init.xavier_normal_(self.w1.weight)
-        nn.init.xavier_normal_(self.w2.weight) 
-        nn.init.xavier_normal_(self.v.weight)
+        self.Pw_hint = args.Pw_hint       
+        self.P_hint = args.P_hint
+        self.pos_strategy = args.pos_strategy
+        self.position_enc = position_enc
+        self.augment_info = args.augment_info
 
         
+        self.multi_head_attn = Multi_head_Attn(self.d_rel, self.head, d_v, self.rel_dropout, 
+                                                             self.bi_fill, self.e_d_attn, self.augment_info)   
+        self.layer_norm = nn.LayerNorm(self.d_rel)
+
+        if self.Pw_hint: 
+            self.w1 = nn.Linear(self.d_rel, self.pair_out)        
+            self.w2 = nn.Linear(self.d_rel, self.pair_out)         
+            self.tanh = nn.Tanh()   
+            self.v = nn.Linear(self.pair_out, self.rel_size)
+            
+            nn.init.xavier_normal_(self.w1.weight)
+            nn.init.xavier_normal_(self.w2.weight) 
+            nn.init.xavier_normal_(self.v.weight)
+
+        else:
+            self.no_pw = nn.Linear(self.d_rel, self.rel_size)
+            nn.init.xavier_normal_(self.no_pw.weight)
+
+    
         self.softmax = nn.LogSoftmax(dim=-1)
-#         self.layer_norm = nn.LayerNorm(self.attn_output)
-#         self.dropout = nn.Dropout(drop_out)
+        self.dropout1 = nn.Dropout(args.pair_dropout)
+        self.dropout2 = nn.Dropout(args.pair_dropout)
         
         
     def forward(self, encoder_outputs):
+        if self.P_hint:
+            pos = torch.tensor(list(range(encoder_outputs.size(1))), device=encoder_outputs.device)
+            if self.pos_strategy == 'backward':
+                encoder_outputs = self.layer_norm(encoder_outputs + self.position_enc(pos).flip(0))
+            elif self.pos_strategy == 'forward':
+                encoder_outputs = self.layer_norm(encoder_outputs + self.position_enc(pos))
+            elif self.pos_strategy == 'minus':
+                encoder_outputs = self.layer_norm(encoder_outputs + positional_dist(self.position_enc(pos)))
+
+        else:
+        	encoder_outputs = self.layer_norm(encoder_outputs)
+
         if self.mh_attn:
             encoder_outputs = self.multi_head_attn(encoder_outputs)
-        
-        decoder = encoder_outputs[:,-1,:].unsqueeze(1)                       #B x 1 x (d_model+LE) 
-        encoder_score = self.w1(encoder_outputs)                             #B x now len x POINT_OUT
-        decoder_score = self.w2(decoder)                                     #B x 1 x POINT_OUT
-        
-        energy = encoder_score+decoder_score
-        
-        energy = self.tanh(energy)                                           #B x now len x POINT_OUT          
-        energy = self.v(energy)                                              #B x now len x rel_size
-        
+                     
+        if self.Pw_hint:
+            decoder = encoder_outputs[:,-1,:].unsqueeze(1)                        #B x 1 x (d_model+TE) 
+            encoder_score = self.dropout1(self.w1(encoder_outputs))               #B x now len x pair_out
+            decoder_score = self.dropout2(self.w2(decoder))                       #B x 1 x pair_out
+            
+            energy = encoder_score+decoder_score       
+            energy = self.tanh(energy)                                           #B x now len x pair_out 
+            energy = self.v(energy)                                              #B x now len x rel_size
+        else:
+            energy = self.no_pw(encoder_outputs)
+   
         p = self.softmax(energy)                        
         
         return p                                                             #B x now len x rel_size
     
 
 
-class Sequence_wise_Multi_head_Attn(nn.Module):
-    def __init__(self, d_model, n_head, d_v, attn_dropout=0.1):
+class Multi_head_Attn(nn.Module):
+    def __init__(self, d_model, n_head, d_v, attn_dropout=0.1, bi_fill=False, e_d_attn=True, augment_info=False):
         super().__init__()     
 
         self.n_head = n_head
-        self.d_v = d_v   
+        self.d_v = d_v
+        self.bi_fill = bi_fill   
+        self.e_d_attn = e_d_attn
+        self.augment_info = augment_info
                 
         self.dropout = nn.Dropout(attn_dropout)
         self.softmax = nn.LogSoftmax(dim=-1)
@@ -452,16 +489,13 @@ class Sequence_wise_Multi_head_Attn(nn.Module):
         self.w_qs = nn.Linear(d_model, n_head * d_v)
         self.w_ks = nn.Linear(d_model, n_head * d_v)
         self.w_vs = nn.Linear(d_model, n_head * d_v)
-        
-        # nn.init.xavier_normal_(self.w_qs.weight)
-        # nn.init.xavier_normal_(self.w_ks.weight)
-        # nn.init.xavier_normal_(self.w_vs.weight)        
+             
         nn.init.normal_(self.w_qs.weight, mean=0, std=np.sqrt(1.0 / (d_model + d_v)))
         nn.init.normal_(self.w_ks.weight, mean=0, std=np.sqrt(1.0 / (d_model + d_v)))
         nn.init.normal_(self.w_vs.weight, mean=0, std=np.sqrt(1.0 / (d_model + d_v)))
 
-        
-#         self.layer_norm = nn.LayerNorm(d_model)
+        self.layer_norm = nn.LayerNorm(d_model)
+
 
 
     def forward(self, encoder_outputs):
@@ -470,8 +504,12 @@ class Sequence_wise_Multi_head_Attn(nn.Module):
         temperature = np.power(temperature, 0.5)
         residual = encoder_outputs        
         
-        query = encoder_outputs[:,-1,:].unsqueeze(1)                       #B x 1 x (d_model)
-        key = encoder_outputs                                              #B x now len x (d_model)
+        if self.e_d_attn:
+            query = encoder_outputs[:,-1,:].unsqueeze(1)       #B x 1 x (d_model)    
+        else:
+            query = encoder_outputs                        #B x now len x (d_model)   
+        
+        key = encoder_outputs                              #B x now len x (d_model)
         value = encoder_outputs
 
         sz_b, len_q, _ = query.size()
@@ -481,31 +519,75 @@ class Sequence_wise_Multi_head_Attn(nn.Module):
         key = self.w_ks(key).view(sz_b, len_k, n_head, d_v)
         value = self.w_vs(value).view(sz_b, len_k, n_head, d_v)
 
-        query = query.permute(2, 0, 1, 3).contiguous().view(-1, len_q, d_v) # (n*B) x 1 x dv
+        query = query.permute(2, 0, 1, 3).contiguous().view(-1, len_q, d_v) # [(n*B) x 1 x dv] or [(n*B) x now len x dv]
         key = key.permute(2, 0, 1, 3).contiguous().view(-1, len_k, d_v) # (n*B) x now len x dv
         value = value.permute(2, 0, 1, 3).contiguous().view(-1, len_k, d_v) # (n*B) x now len x dv
+
+        if self.augment_info:
+            key, value = augment_dist_info(key), augment_dist_info(value)
 
 
         attn = torch.bmm(query, key.transpose(1, 2))
         attn = attn / (temperature+1e-5)
         
-        attn = self.softmax(attn)                                          #(n*B) x 1 x now len
+        attn = self.softmax(attn)       # [(n*B) x 1 x now len] or [(n*B) x now len x now len]
         attn = self.dropout(attn)
 
-        output = attn.transpose(1,2)*value                        # (n*B) x now len x dv 
+        if self.e_d_attn:
+            output = attn.transpose(1,2)*value                        # (n*B) x now len x dv
+        else:
+             output = torch.bmm(attn, value)                           # (n*B) x now len x dv 
+        
         output = output.view(n_head, sz_b, len_k, d_v)
         output = output.permute(1, 2, 0, 3).contiguous().view(sz_b, len_k, -1) # B x now len x (n*dv)
         
-#         output = self.layer_norm(output + residual)                       #B x now len x (d_model) 
-        output = output + residual                       #B x now len x (d_model) 
+        output = output + residual         #B x now len x (d_model) 
+        output = self.layer_norm(output)
         
         return output    
     
-  
+
+def augment_dist_info(encoder):
+    _, nowlen, d_model = encoder.size()
+    rate_list = []
+    for i in range(nowlen):
+        observe_dist = nowlen-i-1
+        dist_rate = observe_dist/nowlen + 1
+        rate_list.append(dist_rate)
+
+    return (encoder.transpose(1,2)*
+        torch.tensor(rate_list, dtype=encoder.dtype, device=encoder.device)).transpose(1,2)
+
+def positional_dist(pos_embd):
+    last_pos = pos_embd[-1]
+    return last_pos-pos_embd
+
+
+
+def get_sinusoid_encoding_table(n_position, d_hid, padding_idx=None):
+    ''' Sinusoid position encoding table '''
+
+    def cal_angle(position, hid_idx):
+        return position / np.power(10000, 2 * (hid_idx // 2) / d_hid)
+
+    def get_posi_angle_vec(position):
+        return [cal_angle(position, hid_j) for hid_j in range(d_hid)]
+
+    sinusoid_table = np.array([get_posi_angle_vec(pos_i) for pos_i in range(n_position)])
+
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+    if padding_idx is not None:
+        # zero vector for padding dimension
+        sinusoid_table[padding_idx] = 0.
+
+    return torch.cuda.FloatTensor(sinusoid_table)
+
+
     
     
-class EntityNLLLoss(nn.NLLLoss):
-    
+class EntityNLLLoss(nn.NLLLoss):  
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
@@ -518,10 +600,11 @@ class EntityNLLLoss(nn.NLLLoss):
     
     
 class RelationNLLLoss(nn.NLLLoss):    
-    def __init__(self, weight, base_weight, rel2ix, device):
+    def __init__(self, weight, base_weight, rel2ix, bi_fill, device):
         self.rel_weight = weight
         self.base_weight = base_weight
         self.rel2ix = rel2ix
+        self.bi_fill = bi_fill
         weight = torch.ones(len(self.rel2ix), device=device)*self.rel_weight
         weight[0], weight[1] = self.base_weight, self.base_weight
         super().__init__(reduction='none', weight=weight)
@@ -529,18 +612,20 @@ class RelationNLLLoss(nn.NLLLoss):
         
     def forward(self, outputs, labels):
         loss = super(RelationNLLLoss, self).forward(outputs.permute(0,-1,1,2),labels)
-
-        return mean_sentence_loss(loss)
+        return mean_sentence_loss(loss, self.bi_fill)
 
 
     
     
-def mean_sentence_loss(loss):
+def mean_sentence_loss(loss, bi_fill):
 
     batch, length = loss.size(0), loss.size(1)
-    num_tokens = torch.ones(batch, length, device=loss.device)*\
-                 torch.tensor(list(range(1,length+1)), dtype=loss.dtype, device=loss.device)
-    # num_tokens = loss.norm(0, -1)
+
+    if bi_fill:
+        num_tokens = torch.ones(batch, length, device=loss.device)*length
+    else:
+        num_tokens = torch.ones(batch, length, device=loss.device)*\
+                     torch.tensor(list(range(1,length+1)), dtype=loss.dtype, device=loss.device)
 
 
     # loss.size() torch.Size([32, 110, 110])
