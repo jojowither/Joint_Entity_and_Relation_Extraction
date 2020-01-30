@@ -8,7 +8,6 @@ import copy
 from tqdm import tqdm
 import pickle
 
-# from evaluation import evaluate_data, decode_ent, decode_rel
 from evaluation import *
 from data_util import BIOLoader
 
@@ -175,7 +174,7 @@ class JointERE(nn.Module):
         if self.ft=='pre_model':
             with torch.no_grad():
                 embed_input = self.pre_model(embed_input)
-                embed_input = torch.sum(torch.stack([layer for layer in embed_input[2][:-1]]), dim=0)
+                embed_input = torch.sum(torch.stack([layer for layer in embed_input[-1][1:]]), dim=0)
                 embed_input, cb_wp_texts = self.cb_wordpiece_and_rm_pad(embed_input, batch_index, loader)
                 ## 
                 # self.check_text_len(loader, cb_wp_texts, batch_index) 
@@ -406,7 +405,7 @@ class JointERE(nn.Module):
             embed_input = BIOLoader.get_pretrain_input(loader, _raw_input = sentence).to(self.use_device)
             ent_output, rel_output = self.forward(embed_input, [0], loader)
 
-            len_of_sent = len(sentence)
+            len_of_sent = len(sentence.split())
             e = ent_argmax(ent_output[:len_of_sent]).cpu().numpy()[0]
 
             predict_ent = [self.schema.ix2ent[i] for i in e]
@@ -418,6 +417,7 @@ class JointERE(nn.Module):
 
             print()
             print(sentence)
+            print()
             print('Predict Output')
             print(predict_ent[:len_of_sent])
             print(pred_r_list[:len_of_sent])

@@ -1,7 +1,7 @@
 import torch
 from torch import optim
 import torch.utils.data as Data
-from pytorch_transformers import *
+from transformers import *
 from sklearn.model_selection import KFold
 from data_util import Schema
 from data_util import BIOLoader
@@ -104,7 +104,7 @@ def model_main(training_data, dev_data, param_list, schema, tokenizer, dataset, 
         print('Now Predict Sentence')
         model.load_state_dict(torch.load(args.model_dict))
         model.predict(loader)
-        print('Break model')
+        print('Quit Model')
 
     
     if args.train_eval_predict!='predict':
