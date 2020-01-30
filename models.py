@@ -8,7 +8,9 @@ import copy
 from tqdm import tqdm
 import pickle
 
-from evaluation import evaluate_data, decode_ent, decode_rel
+# from evaluation import evaluate_data, decode_ent, decode_rel
+from evaluation import *
+from data_util import BIOLoader
 
 
 
@@ -45,6 +47,7 @@ class JointERE(nn.Module):
         self.rel_weight_base_tag = args.rel_weight_base_tag
         self.scheduler_step = args.scheduler_step
         self.scheduler_gamma = args.scheduler_gamma
+        self.activation = _get_activation_fn(args.activation_fn)
         self.args = args
         self.use_device = use_device
     
@@ -213,7 +216,7 @@ class JointERE(nn.Module):
             encoder_sequence = torch.stack(encoder_sequence_l).transpose(0, 1)     #B x len x (2*TE+d_model)     
    
             # Calculate attention weights 
-            rel_weights = self.relation_layer(F.selu(self.t2rel(encoder_sequence)))     
+            rel_weights = self.relation_layer(self.activation(self.t2rel(encoder_sequence)))     
     
             entity_tensor[:,length,:] = ent_output            
             rel_tensor[:,length,:length+1,:] = rel_weights
@@ -224,7 +227,7 @@ class JointERE(nn.Module):
                 ## sentence order is reversed
                 ## flip the order of the sentence
                 encoder_sequence = torch.stack(encoder_sequence_l[length:]).transpose(0, 1).flip(1)
-                rel_weights = self.relation_layer(F.selu(self.t2rel(encoder_sequence))).flip(1)
+                rel_weights = self.relation_layer(self.activation(self.t2rel(encoder_sequence))).flip(1)
                 rel_tensor[:,length,length:,:] = rel_weights
 
         return entity_tensor, rel_tensor
@@ -391,6 +394,39 @@ class JointERE(nn.Module):
             e_score, er_score = evaluate_data(self, loader, self.schema, isTrueEnt, silent, 
                                               rel_detail, print_final)
             return e_score, er_score
+
+
+    def predict(self, loader):
+
+        while True:
+            sentence = input('Enter the sentence to predict. Type !quit to break: ')
+            if sentence=='!quit':
+                break
+
+            embed_input = BIOLoader.get_pretrain_input(loader, _raw_input = sentence).to(self.use_device)
+            ent_output, rel_output = self.forward(embed_input, [0], loader)
+
+            len_of_sent = len(sentence)
+            e = ent_argmax(ent_output[:len_of_sent]).cpu().numpy()[0]
+
+            predict_ent = [self.schema.ix2ent[i] for i in e]
+            pred_ent_list, _ = decode_ent(e, self.schema)
+
+            r = rel_argmax(rel_output[:len_of_sent]).tolist()[0]
+            pred_r_list = decode_rel(predict_ent, r, self.schema) 
+            pred_rel_list = decode_rel_to_eval(pred_r_list, self.schema, pred_ent_list)
+
+            print()
+            print(sentence)
+            print('Predict Output')
+            print(predict_ent[:len_of_sent])
+            print(pred_r_list[:len_of_sent])
+            print()
+            print('Predict in Triplet')
+            print('Entity:   ', pred_ent_list)
+            print('Relation: ', pred_rel_list)
+            print("=====================================")
+
     
                       
 
@@ -635,6 +671,17 @@ def mean_sentence_loss(loss, bi_fill):
     # loss  torch.Size([32, 110])
     
     return loss.sum(dim=-1).div(num_tokens).mean()
+
+
+def _get_activation_fn(activation):
+    if activation == "relu":
+        return F.relu
+    elif activation == "selu":
+        return F.selu    
+    elif activation == "gelu":
+        return F.gelu
+    else:
+        raise RuntimeError("activation should be relu/selu/gelu, not %s." % activation)
 
 
 

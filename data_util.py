@@ -121,7 +121,7 @@ class RelTagDict(TagDict):
 class BIOLoader(Data.DataLoader):
     
     def __init__(self, data, max_len, batch_size, schema, tokenizer, args,
-                 embedding='BERT_base', shuffle=False, device=torch.device('cpu')):
+                 embedding='XLNet_base', shuffle=False, device=torch.device('cpu')):
         
         '''
         Load corpus and dictionary if available to initiate a torch DataLoader
@@ -196,35 +196,46 @@ class BIOLoader(Data.DataLoader):
 
 
 
-    def get_pretrain_input(self):
-        indexeds = []
-        self.texts_with_OOV = ['']*len(self.raw_input)
+    def get_pretrain_input(self, _raw_input=None):
+        self.indexeds = []
 
-        # this wordpiece_ranges defines wordpiece and sentencepiece
-        self.wordpiece_ranges = ['']*len(self.raw_input)
+        if _raw_input==None:
+            _raw_input = self.raw_input
+
+            self.texts_with_OOV = ['']*len(_raw_input)
+            # this wordpiece_ranges defines wordpiece and sentencepiece
+            self.wordpiece_ranges = ['']*len(_raw_input)
+
+            for idx in self.batch_index:
+                self.token_process(' '.join(_raw_input[idx]), idx)
+
+        else:
+            self.texts_with_OOV = ['']*len(_raw_input)
+            self.wordpiece_ranges = ['']*len(_raw_input)
+            self.token_process(_raw_input)
         
+        return torch.stack(self.indexeds)
 
-        for idx in self.batch_index:
-            text = self.raw_input[idx]
-            text = ' '.join(text)
 
-            tokenized_text = self.tokenizer.tokenize(text)
-            indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
-            indexed_tokens = self.pretrain_pad(indexed_tokens)
+    def token_process(self, text, idx=None):
+        tokenized_text = self.tokenizer.tokenize(text)
+        indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
+        indexed_tokens = self.pretrain_pad(indexed_tokens)
 
-            if self.embedding.split('_')[0]=='BERT':
-                wordpiece_range = self.wordpiece_combine(text, tokenized_text)
+        if self.embedding.split('_')[0]=='BERT':
+            wordpiece_range = self.wordpiece_combine(text, tokenized_text)
 
-            elif self.embedding.split('_')[0]=='XLNet':
-                wordpiece_range = self.sentencepiece_combine(text, tokenized_text)
+        elif self.embedding.split('_')[0]=='XLNet':
+            wordpiece_range = self.sentencepiece_combine(text, tokenized_text)
 
-            indexeds.append(torch.tensor(indexed_tokens))
-            
+        self.indexeds.append(torch.tensor(indexed_tokens))
+        
+        if idx:
             self.texts_with_OOV[idx] = tokenized_text
             self.wordpiece_ranges[idx] = wordpiece_range
-
-        
-        return torch.stack(indexeds)
+        else:
+            self.texts_with_OOV[0] = tokenized_text
+            self.wordpiece_ranges[0] = wordpiece_range
 
 
     def pretrain_pad(self, indexed_tokens):

@@ -240,16 +240,16 @@ def batch_decode(ent_output, rel_output, batch_index, word_lists, true_ent, true
             print(true_ent)
             print(true_r_list)
             print()
-            print('Predict output')
+            print('Predict Output')
             print(predict_ent)
             print(pred_r_list)
             print()
-            print('True')
-            print(true_ent_list)
-            print(true_rel_list)
-            print('predict')
-            print(pred_ent_list)
-            print(pred_rel_list)
+            print('True in Triplet')
+            print('Entity:   ', true_ent_list)
+            print('Relation: ', true_rel_list)
+            print('Predict in Triplet')
+            print('Entity:   ', pred_ent_list)
+            print('Relation: ', pred_rel_list)
             print("=====================================")
             
         
@@ -294,7 +294,7 @@ def batch_decode(ent_output, rel_output, batch_index, word_lists, true_ent, true
     
     return anay_true, anay_pred, anay_pospred, y_true_ent, y_pred_ent, y_true_rel, y_pred_rel, tp, fp, tn, fn,\
             (sentences_len, true_rel_lists, pred_rel_lists)
-            
+
 
 
 

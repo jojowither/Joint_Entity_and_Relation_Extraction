@@ -31,11 +31,11 @@ def str2bool(v):
 parser = argparse.ArgumentParser()
 parser.add_argument('--data_root', type=str, default='data/')
 parser.add_argument('--dataset', type=str, default='conll04', help='Choose conll04, ADE, ACE04, ACE05')
-parser.add_argument('--train_eval', type=str, default='train', help='Choose train or eval')
+parser.add_argument('--train_eval_predict', type=str, default='train', help='Choose train, eval or predict')
 parser.add_argument('--model_dict', type=str, default='NER_RE_best.conll04.XLNet_base.32.nobi.backward.Pw_hint.pkl')
 
 parser.add_argument('--USE_CUDA', type=str2bool, default=True)
-parser.add_argument('--CUDA_device', type=str, default='1')
+parser.add_argument('--CUDA_device', type=str, default='0')
 parser.add_argument('--embedding', type=str, default='XLNet_base', help='Choose BERT_base, BERT_large, \
                                                                         BERT_base_finetune, XLNet_base, \
                                                                         XLNet_large and GloVe ')
@@ -45,6 +45,7 @@ parser.add_argument('--n_iter', type=int, default=300,
 parser.add_argument('--batch_size', type=int, default=32, 
                     help='If you use bert_finetune, please adjust batch_size to 10, otherwise it will OOM')
 parser.add_argument('--bilstm_n_layers', type=int, default=2)
+parser.add_argument('--max_len', type=int, default=100)
 parser.add_argument('--word_dropout', type=float, default=0.2)
 parser.add_argument('--bilstm_dropout', type=float, default=0.2)
 parser.add_argument('--rel_dropout', type=float, default=0.2)
@@ -53,6 +54,7 @@ parser.add_argument('--d_rel', type=int, default=512)
 parser.add_argument('--n_r_head', type=int, default=32, help='Numbers of head in multi-head self-attention')
 parser.add_argument('--pair_out', type=int, default=128, help='Pw-hint size')
 parser.add_argument('--mh_attn', type=str2bool, default=True, help='Use multi-head attention')
+parser.add_argument('--activation_fn', type=str, default='relu', help='relu, selu, or gelu')
 parser.add_argument('--lr', type=float, default=0.0004, help='Learning rate in AdamW')
 parser.add_argument('--weight_decay', type=float, default=2e-3)
 parser.add_argument('--rel_weight', type=float, default=20, help='the weight of relation tags')
@@ -85,29 +87,41 @@ def model_main(training_data, dev_data, param_list, schema, tokenizer, dataset, 
     loader = BIOLoader(training_data, max_len, batch_size, schema, tokenizer, args,
                        embedding, shuffle=True, device=use_device)
     dev_loader = BIOLoader(dev_data, max_len, batch_size, schema, tokenizer, args,
-                           embedding, shuffle=False, device=use_device) 
+                           embedding, shuffle=False, device=use_device)
 
 
     model = JointERE(*param_list).to(use_device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
 
-    if args.train_eval=='train':
+    if args.train_eval_predict=='train':
+        print('Now Training')
         model.fit(loader, dev_loader, n_fold, n_iter=n_iter, optimizer=optimizer, dataset=dataset)
-    elif args.train_eval=='eval':
+    elif args.train_eval_predict=='eval':
+        print('Now evaluate result')
         model.load_state_dict(torch.load(args.model_dict))
+    elif args.train_eval_predict=='predict':
+        print('Now Predict Sentence')
+        model.load_state_dict(torch.load(args.model_dict))
+        model.predict(loader)
+        print('Break model')
+
     
-    if test_data!=None:
-        test_loader = BIOLoader(test_data, max_len, batch_size, schema, tokenizer, args,
-                                embedding, shuffle=False, device=use_device) 
-        print()
-        print('Test Set')
-        e_score, er_score, all_er_score, acc_zone_block = model.score(test_loader, silent=args.silent, rel_detail=True)
-    
-    else:
-        e_score, er_score, all_er_score, acc_zone_block = model.score(dev_loader, silent=args.silent, rel_detail=True)
+    if args.train_eval_predict!='predict':
+        if test_data!=None:
+            test_loader = BIOLoader(test_data, max_len, batch_size, schema, tokenizer, args,
+                                    embedding, shuffle=False, device=use_device) 
+            print()
+            print('Test Set')
+            e_score, er_score, all_er_score, acc_zone_block = model.score(test_loader, silent=args.silent, rel_detail=True)
         
-    return e_score, er_score
+        else:
+            e_score, er_score, all_er_score, acc_zone_block = model.score(dev_loader, silent=args.silent, rel_detail=True)
+        
+        return e_score, er_score
+
+    else:
+        return None, None
 
 
 def use_cv(cv_dir, param_list, schema, tokenizer, use_device, n_fold, dataset, process_path=None):
@@ -178,6 +192,7 @@ use_device = torch.device('cuda' if USE_CUDA else 'cpu')
 
 config = {'embedding': args.embedding,
           'n_iter': args.n_iter,
+          'max_len': args.max_len,
           'batch_size': args.batch_size,
           'bilstm_n_layers': args.bilstm_n_layers,
           'word_dropout': args.word_dropout,
@@ -194,13 +209,15 @@ config = {'embedding': args.embedding,
           'scheduler_step': args.scheduler_step,
           'scheduler_gamma': args.scheduler_gamma, 
           'silent': args.silent,
-          'mh_attn':args.mh_attn,
+          'mh_attn': args.mh_attn,
+          'activation_fn': args.activation_fn,
           'clip_value': args.clip_value,
           'bi_fill':args.bi_fill,
           'e_d_attn':args.e_d_attn,
           'Pw_hint':args.Pw_hint,
           'P_hint':args.P_hint,
-          'pos_strategy':args.pos_strategy
+          'pos_strategy':args.pos_strategy,
+          'train_eval_predict': args.train_eval_predict
 
           }
 print()
@@ -247,9 +264,8 @@ elif lg_or_bs=='large':
 
 
 d_r_v = args.d_rel//args.n_r_head  # demension of relation values
-max_len = 100
 schema = Schema(dataset)
-param_list = [pre_model, max_len, d_model, d_r_v, schema, use_device, args]
+param_list = [pre_model, args.max_len, d_model, d_r_v, schema, use_device, args]
 
 
 
