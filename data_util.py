@@ -125,20 +125,12 @@ class BIOLoader(Data.DataLoader):
         '''
         Load corpus and dictionary if available to initiate a torch DataLoader
         Input:
-            data_path:
-                The string of path to BIO-format corpus.
             max_len:
                 The maximal tokens allowed in a sentence.
             batch_size:
                 The batch_size parameter as a torch DataLoader.
             schema:
                 An instance of data_util.Schema
-            word_to_ix: optional
-                The word (token) dictionary to index. Use the dict to map sentences
-                into indexed sequences if provided, or try to load it from disk if 
-                the path is provided.
-                If the dictionary does not present in the path, this class would
-                write the newly parsed dictionary to the path.
             shuffle: optional
                 The shuffle parameter as a torch Dataloader.
             embedding: optional
@@ -238,7 +230,7 @@ class BIOLoader(Data.DataLoader):
 
 
     def pretrain_pad(self, indexed_tokens):
-        # self.max_len+74 == the range of maxlen + the slice after wordpiece
+        # self.max_len+94 == the range of maxlen + the slice after wordpiece
         indexed_tokens += [0 for i in range(self.max_len+94 - len(indexed_tokens))]
         return indexed_tokens
 

@@ -148,13 +148,15 @@ def batch_decode(ent_output, rel_output, batch_index, word_lists, true_ent, true
     
     Input:
         ent_output:
+            raw model predictions
         rel_output:
             raw model predictions
         batch_index:
             current index to the raw input sentences
-        wordlists:
+        word_lists:
             the raw input sentences in characters
         true_ent:
+            ground truth for training model
         true_rel:
             ground truth for training model
         schema:
@@ -176,11 +178,6 @@ def batch_decode(ent_output, rel_output, batch_index, word_lists, true_ent, true
         y_true_ent:
         y_pred_ent:
             a list of char.-offset aligned entity class
-        y_true_rel_list:
-            a list of entity-pair aligned relation class
-        y_pred_rel_list:
-            a list of lists of entity-pair aligned relation class,
-            predicted with and ordered as in parameter thresholds
         
         tp, fp, tn, fn : the number of true postive, false postive, true negtive, false negtive
         

@@ -18,12 +18,12 @@ class JointERE(nn.Module):
     	schema, use_device, args, embedding='XLNet_base', mh_attn=True):
         '''
         JointERE
-            Joint Entity and Relation mention Extraction on Traditional Chinese text
+            Joint Entity and Relation Extraction on raw text 
         Input:
             schema:
                 An instance of data_util.Schema with definition of entities and relations
             embedding:
-                'BERT_base', 'BERT_large', 'BERT_base_finetune' or 'GloVe'
+                'XLNet_base', 'XLNet_large', 'BERT_base', 'BERT_large', 'BERT_base_finetune' or 'GloVe'
         '''
         
         
@@ -37,7 +37,7 @@ class JointERE(nn.Module):
         self.ent_size = len(schema.ent2ix)                   #es
         self.rel_size = len(schema.rel2ix)                   #rs 
         self.d_model = d_model
-        self.tag_embed_dim = self.ent_size                 #TE
+        self.tag_embed_dim = self.ent_size                   #TE
         self.schema = schema
         self.n_r_head = args.n_r_head
         self.mh_attn = mh_attn
@@ -221,6 +221,7 @@ class JointERE(nn.Module):
             rel_tensor[:,length,:length+1,:] = rel_weights
 
 
+        # bidirectional filling table on relation extraction
         if self.args.bi_fill:
             for length in reversed(range(self.maxlen)):
                 ## sentence order is reversed
@@ -251,18 +252,6 @@ class JointERE(nn.Module):
                 The instance of data_util.BIOLoader containing training data
             dev_loader:
                 The instance of data_util.BIOLoader containing development/validation data
-            optimizer: optional
-                An specified optimizer from torch.optim for training model.
-                By default Adam(lr=0.01, weight_decay=1e-4, amsgrad=True) would be used.
-            n_iter: optional
-                The total traing epochs to fit and search the best model.
-                The default value is 50 epochs.
-            stable_iter: optional
-                The epoch after which the model begins to evaluate and select model.
-                The default value is 10 epochs.
-            save_model: optional
-                The path to store model parameters during model selection
-                If unspecified, the path defaults to 'checkpoints/relation_extraction_best.{time}.pkl'
         '''
         
         criterion_tag = self.entity_loss()
@@ -664,11 +653,11 @@ def mean_sentence_loss(loss, bi_fill):
                      torch.tensor(list(range(1,length+1)), dtype=loss.dtype, device=loss.device)
 
 
-    # loss.size() torch.Size([32, 110, 110])
-    # num_tokens  torch.Size([32, 110])
-    # tensor([[  1.,   2.,   3.,  ..., 108., 109., 110.],
-    #         [  1.,   2.,   3.,  ..., 108., 109., 110.],....)
-    # loss  torch.Size([32, 110])
+    # loss.size() torch.Size([32, 100, 100])
+    # num_tokens  torch.Size([32, 100])
+    # tensor([[  1.,   2.,   3.,  ..., 98., 99., 100.],
+    #         [  1.,   2.,   3.,  ..., 98., 99., 100.],....)
+    # loss  torch.Size([32, 100])
     
     return loss.sum(dim=-1).div(num_tokens).mean()
 
