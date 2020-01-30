@@ -71,3 +71,5 @@ python3 main.py --CUDA_device 0 --train_eval_predict predict --dataset conll04 -
 
 ---
 
+## Notes
+Please cite our work when using this software.
