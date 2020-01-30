@@ -24,7 +24,7 @@ Given a raw text, (i) give the entity tag of each word (e.g., NER) and (ii) the 
 - ACE04 https://catalog.ldc.upenn.edu/LDC2005T09
 - ACE05 https://catalog.ldc.upenn.edu/LDC2006T06
  
-Download data and put them in their respective folders in the path /data/ 
+Download data and put them in their respective folders in the path ```/data/ ```.
 
 ---
 
