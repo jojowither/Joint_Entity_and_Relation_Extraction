@@ -61,7 +61,8 @@ python3 main.py --CUDA_device 0 --train_eval_predict eval --dataset conll04 --si
 ---
 
 ## Predict
-After training, give any sentence and predict the NER and RE
+After training, give any sentence and predict the NER and RE.
+
 For each dataset, change parameters ```--dataset``` and ```--model_dict```.
 
 ```
