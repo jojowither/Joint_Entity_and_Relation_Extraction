@@ -15,15 +15,14 @@ from data_util import BIOLoader
 
 class JointERE(nn.Module):
     def __init__(self, pre_model, maxlen, d_model, d_r_v,  
-    	schema, use_device, args, embedding='XLNet_base', mh_attn=True):
+    	schema, use_device, args):
         '''
         JointERE
             Joint Entity and Relation Extraction on raw text 
         Input:
             schema:
                 An instance of data_util.Schema with definition of entities and relations
-            embedding:
-                'XLNet_base', 'XLNet_large', 'BERT_base', 'BERT_large', 'BERT_base_finetune' or 'GloVe'
+           
         '''
         
         
@@ -40,8 +39,8 @@ class JointERE(nn.Module):
         self.tag_embed_dim = self.ent_size                   #TE
         self.schema = schema
         self.n_r_head = args.n_r_head
-        self.mh_attn = mh_attn
-        self.embedding = embedding
+        self.mh_attn = args.mh_attn
+        self.embedding = args.embedding
         self.rel_weight = args.rel_weight
         self.rel_weight_base_tag = args.rel_weight_base_tag
         self.scheduler_step = args.scheduler_step
@@ -186,7 +185,7 @@ class JointERE(nn.Module):
             # self.check_text_len(loader, cb_wp_texts, batch_index) 
 
             
-             
+
         embed_input = self.word_dropout(embed_input)                                          
         enc_output = self.bilstm(embed_input)[0]      # B x ML x d_model
 
