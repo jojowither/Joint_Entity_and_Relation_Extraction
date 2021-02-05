@@ -1,5 +1,8 @@
 # Multi-head Attention with Hint Mechanisms for Joint Extraction of Entity and Relation
 
+## Multi-head Attention with Hint Mechanisms for Joint Extraction of Entity and Relation
+The paper accept by MobiSocial2021
+
 ---
 
 ## Requirements
